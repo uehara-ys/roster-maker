@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>選手リストメーカー</title>
+<meta name="description" content="PDFやスクリーンショットから、ポジション・氏名・所属だけを抜き出してシンプルなHTMLにします。ブラウザの中だけで動きます。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+/* Layout: one narrow column — input, editable roster table, generated HTML */
+:root {
+  --bg: #f6f7f5; --surface: #ffffff; --fg: #1c211f; --muted: #5f6a65; --line: #d6dcd8;
+  --accent: #23614f; --accent-ink: #ffffff; --danger: #a33a2c; --code-bg: #eef1ef; --row-alt: #f1f4f2;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141816; --surface: #1c211f; --fg: #e6ebe8; --muted: #9aa6a0; --line: #303833;
+    --accent: #6cc0a4; --accent-ink: #0f1a16; --danger: #ef8a7a; --code-bg: #111513; --row-alt: #20262300;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.7;
+  padding: 32px max(16px, env(safe-area-inset-right, 0px)) 48px max(16px, env(safe-area-inset-left, 0px));
+}
+.wrap { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+header h1 { font-size: 1.6rem; margin: 0; letter-spacing: .02em; }
+header p { margin: 4px 0 0; color: var(--muted); }
+.tag { font-family: var(--font-mono); font-size: .8rem; color: var(--accent); }
+h2 { font-size: 1.05rem; margin: 0; }
+section { display: flex; flex-direction: column; gap: 10px; }
+
+.drop {
+  border: 2px dashed var(--line); border-radius: 10px; background: var(--surface);
+  padding: 26px 20px; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center;
+}
+.drop.over { border-color: var(--accent); }
+.drop small { color: var(--muted); }
+.files { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.chip { font-family: var(--font-mono); font-size: .78rem; border: 1px solid var(--line); border-radius: 99px; padding: 2px 10px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+button {
+  font: inherit; font-size: .92rem; border-radius: 7px; padding: 7px 15px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+}
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+button.small { padding: 3px 10px; font-size: .82rem; }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.status { color: var(--muted); font-size: .9rem; min-height: 1.5em; }
+.status.err { color: var(--danger); }
+progress { width: 100%; height: 6px; accent-color: var(--accent); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table.edit { border-collapse: collapse; width: 100%; min-width: 520px; }
+table.edit th { text-align: left; font-size: .8rem; color: var(--muted); font-weight: 700; padding: 8px 8px; border-bottom: 1px solid var(--line); letter-spacing: .04em; }
+table.edit td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+table.edit tr:last-child td { border-bottom: 0; }
+table.edit input { width: 100%; font: inherit; font-size: .92rem; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 4px 6px; }
+table.edit input:hover { border-color: var(--line); }
+table.edit td.pos { width: 90px; }
+table.edit td.act { width: 40px; text-align: center; }
+.del { border: 0; background: none; color: var(--muted); font-size: 1.1rem; padding: 2px 8px; }
+.del:hover { color: var(--danger); }
+.empty { padding: 18px; color: var(--muted); text-align: center; }
+.raw summary { cursor: pointer; color: var(--muted); font-size: .88rem; }
+.raw pre { font-family: var(--font-mono); font-size: .78rem; background: var(--code-bg); padding: 12px; border-radius: 8px; overflow-x: auto; max-height: 260px; margin: 8px 0 0; }
+
+.tabs { display: flex; gap: 4px; }
+.tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.head { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; }
+.preview { background: #fff; color: #000; border: 1px solid var(--line); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: serif; font-size: 16px; line-height: 1.5; }
+.preview table { border-collapse: collapse; }
+.preview th, .preview td { border: 1px solid #999; padding: 4px 8px; }
+textarea.code {
+  display: block; width: 100%; min-height: 360px; resize: vertical; margin: 0;
+  background: var(--code-bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+  font-family: var(--font-mono); font-size: .8rem; line-height: 1.55; white-space: pre; overflow: auto; tab-size: 2;
+}
+.note { font-size: .82rem; color: var(--muted); }
+footer { color: var(--muted); font-size: .82rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="tag">PDF / スクリーンショット → ポジション・氏名・所属</div>
+    <h1>選手リストメーカー</h1>
+    <p>メンバー表のPDFや画像から、ポジション・氏名・所属だけを抜き出してシンプルなHTMLにします。ファイルはどこにも送信されず、ブラウザの中だけで処理されます。</p>
+  </header>
+
+  <section>
+    <div class="drop" id="drop">
+      <strong>ここにドロップ、または貼り付け（⌘V / Ctrl+V）</strong>
+      <small>PDF・PNG・JPG・WebP。文字が入ったPDFが一番正確です</small>
+      <div class="row" style="justify-content:center">
+        <button type="button" id="pick">ファイルを選ぶ</button>
+        <input type="file" id="file" accept="application/pdf,image/png,image/jpeg,image/webp" multiple hidden>
+        <button type="button" class="primary" id="go" disabled>読み取る</button>
+      </div>
+      <div class="files" id="files"></div>
+    </div>
+    <progress id="prog" max="1" value="0" hidden></progress>
+    <div class="status" id="status" role="status"></div>
+  </section>
+
+  <section>
+    <div class="head">
+      <h2>抜き出した選手 <span class="note" id="count"></span></h2>
+      <div class="row">
+        <button type="button" class="small" id="add">＋ 行を追加</button>
+        <button type="button" class="small" id="clear">すべて消す</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="edit">
+        <thead><tr><th>ポジション</th><th>氏名</th><th>所属</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="note" id="exnote">↑ 入力の例です。ファイルを読み取ると置き換わります。セルは直接書き換えられます。</div>
+    <details class="raw"><summary>読み取った元の文字を見る</summary><pre id="raw">（まだ読み取っていません）</pre></details>
+  </section>
+
+  <section>
+    <div class="head">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-prev" aria-selected="true">プレビュー</button>
+        <button type="button" role="tab" id="tab-code" aria-selected="false">コード</button>
+      </div>
+      <div class="row">
+        <button type="button" id="copy">コピー</button>
+        <button type="button" id="save">.html を保存</button>
+      </div>
+    </div>
+    <div class="preview" id="preview"></div>
+    <div id="code-wrap" hidden>
+      <textarea class="code" id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="HTMLコード（編集できます）"></textarea>
+      <div class="note">ここで直接編集できます。表を書き換えると、コードは表の内容で作り直されます。</div>
+    </div>
+  </section>
+
+  <footer>読み取りはブラウザ内の文字認識（OCR）で行います。画像の読み取りは初回だけ認識データ（十数MB）の読み込みに時間がかかります。結果は必ず確認してください。</footer>
+</div>
+
+<script>
+// PARSER-START
+const POS_MAP = {
+  "GK": "GK", "ゴールキーパー": "GK", "DF": "DF", "ディフェンダー": "DF",
+  "MF": "MF", "ミッドフィールダー": "MF", "FW": "FW", "フォワード": "FW",
+};
+const POS_RE = /^(GK|DF|MF|FW|ゴールキーパー|ディフェンダー|ミッドフィールダー|フォワード)$/i;
+const KANJI_KANA = /[぀-ゟ㐀-鿿々〆ヶ]/;          // hiragana + kanji
+const KATAKANA_ONLY = /^[゠-ヿー・\s]+$/;
+const LATIN_ONLY = /^[A-Za-z .'\-]+$/;
+const NOISE = /^(No\.?|背番号|ポジション|氏名|名前|所属|所属チーム|生年月日|年齢|身長|体重|ふりがな|フリガナ|代表歴|出場|得点|\d+|[\d.\/\-年月日歳]+|\d+(cm|kg|㎝|㎏)|\(\d+\))$/i;
+
+// Merge runs of single-character CJK tokens that OCR splits apart ("鈴 木 彩 艶" → "鈴木彩艶").
+function mergeSplitChars(line) {
+  const t = line.split(" ");
+  const out = [];
+  let buf = "";
+  for (const w of t) {
+    if (w.length === 1 && /[぀-ヿ㐀-鿿々ー]/.test(w)) { buf += w; continue; }
+    if (buf) { out.push(buf); buf = ""; }
+    out.push(w);
+  }
+  if (buf) out.push(buf);
+  return out.join(" ");
+}
+
+function normalizeLine(s) {
+  return mergeSplitChars(s.normalize("NFKC").replace(/[|｜]/g, " ").replace(/\s+/g, " ").trim());
+}
+
+function parseRoster(lines) {
+  const rows = [];
+  let current = "";
+  for (const raw of lines) {
+    let line = normalizeLine(raw);
+    if (!line) continue;
+    if (POS_RE.test(line)) { current = POS_MAP[line.toUpperCase()] || POS_MAP[line] || line; continue; }
+
+    // club in brackets: (パルマ/イタリア) or 【...】
+    let club = "";
+    const br = line.match(/(^|\s)[(（【\[]([^)）】\]]+)[)）】\]]/);   // standalone bracket = club; "パルマ(イタリア)" stays one token
+    if (br) { club = br[2].trim(); line = (line.slice(0, br.index) + " " + line.slice(br.index + br[0].length)).trim(); }
+
+    let tokens = line.split(" ").filter(Boolean);
+    let pos = "";
+    const pi = tokens.findIndex(tk => POS_RE.test(tk));
+    if (pi !== -1 && pi <= 2) { pos = POS_MAP[tokens[pi].toUpperCase()] || POS_MAP[tokens[pi]] || tokens[pi]; tokens.splice(pi, 1); }
+    tokens = tokens.filter(tk => !NOISE.test(tk));
+
+    // name: first kanji/hiragana token; join a following short kanji token as the given name
+    const ni = tokens.findIndex(tk => KANJI_KANA.test(tk) && tk.length <= 8);
+    if (ni === -1) continue;
+    let name = tokens[ni];
+    let next = ni + 1;
+    if (name.length <= 4 && tokens[next] && KANJI_KANA.test(tokens[next]) && tokens[next].length <= 4 && !KATAKANA_ONLY.test(tokens[next])) {
+      name += " " + tokens[next]; next++;
+    }
+    // drop a katakana reading immediately after the name, keep the rest as club
+    let restTokens = tokens.slice(next);
+    while (restTokens.length && (KATAKANA_ONLY.test(restTokens[0]) || LATIN_ONLY.test(restTokens[0])) && restTokens.length > 1) restTokens.shift();
+    if (!club) club = restTokens.join(" ").trim();
+
+    if (!pos && !club && !current) continue;   // probably not a roster line
+    rows.push({ position: pos || current, name, club });
+  }
+  return rows;
+}
+// PARSER-END
+
+(() => {
+  const $ = id => document.getElementById(id);
+  const drop = $("drop"), fileIn = $("file"), go = $("go"), statusEl = $("status"), prog = $("prog");
+  const rowsEl = $("rows"), preview = $("preview"), codeEl = $("code"), rawEl = $("raw");
+  let files = [];
+  let rows = [
+    { position: "GK", name: "山田 太郎", club: "サンプルFC" },
+    { position: "DF", name: "佐藤 一郎", club: "サンプル・ユナイテッド" },
+    { position: "MF", name: "鈴木 健", club: "サンプルSC" },
+  ];
+
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function setStatus(msg, err) { statusEl.textContent = msg; statusEl.classList.toggle("err", !!err); }
+
+  function buildHtml() {
+    const body = rows.filter(r => r.position || r.name || r.club)
+      .map(r => `<tr><td>${esc(r.position)}</td><td>${esc(r.name)}</td><td>${esc(r.club)}</td></tr>`).join("\n");
+    return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>選手リスト</title>
+</head>
+<body>
+<h1>選手リスト</h1>
+<table>
+<thead>
+<tr><th>ポジション</th><th>氏名</th><th>所属</th></tr>
+</thead>
+<tbody>
+${body}
+</tbody>
+</table>
+</body>
+</html>
+`;
+  }
+  function renderPreview(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    doc.querySelectorAll("script,style,iframe,link,meta,object,embed").forEach(n => n.remove());
+    doc.body.querySelectorAll("*").forEach(el => [...el.attributes].forEach(a => { if (/^on/i.test(a.name) || a.name === "style") el.removeAttribute(a.name); }));
+    preview.innerHTML = doc.body.innerHTML;
+  }
+  function regen() { codeEl.value = buildHtml(); renderPreview(codeEl.value); }
+
+  function renderRows() {
+    rowsEl.innerHTML = "";
+    if (!rows.length) {
+      rowsEl.innerHTML = `<tr><td colspan="4" class="empty">まだ選手がいません。ファイルを読み取るか「＋ 行を追加」で入力してください。</td></tr>`;
+    }
+    rows.forEach((r, i) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="pos"><input id="p${i}" aria-label="ポジション"></td><td><input id="n${i}" aria-label="氏名"></td><td><input id="c${i}" aria-label="所属"></td><td class="act"><button type="button" class="del" aria-label="この行を削除">×</button></td>`;
+      const [p, n, c] = tr.querySelectorAll("input");
+      p.value = r.position; n.value = r.name; c.value = r.club;
+      p.oninput = () => { r.position = p.value; regen(); };
+      n.oninput = () => { r.name = n.value; regen(); };
+      c.oninput = () => { r.club = c.value; regen(); };
+      tr.querySelector(".del").onclick = () => { rows.splice(i, 1); renderRows(); };
+      rowsEl.append(tr);
+    });
+    $("count").textContent = rows.length ? `${rows.length}人` : "";
+    regen();
+  }
+  renderRows();
+
+  $("add").onclick = () => { rows.push({ position: rows.at(-1)?.position || "", name: "", club: "" }); renderRows(); $("n" + (rows.length - 1))?.focus(); };
+  $("clear").onclick = () => { rows = []; renderRows(); };
+
+  codeEl.addEventListener("input", () => renderPreview(codeEl.value));
+  codeEl.addEventListener("keydown", ev => {
+    if (ev.key === "Tab" && !ev.shiftKey && !ev.isComposing) {
+      ev.preventDefault(); codeEl.setRangeText("  ", codeEl.selectionStart, codeEl.selectionEnd, "end"); renderPreview(codeEl.value);
+    }
+  });
+
+  function selectTab(w) {
+    $("tab-prev").setAttribute("aria-selected", w === "prev"); $("tab-code").setAttribute("aria-selected", w === "code");
+    preview.hidden = w !== "prev"; $("code-wrap").hidden = w !== "code";
+  }
+  $("tab-prev").onclick = () => selectTab("prev");
+  $("tab-code").onclick = () => selectTab("code");
+
+  $("copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(codeEl.value); setStatus("HTMLをコピーしました。"); }
+    catch { selectTab("code"); codeEl.focus(); codeEl.select(); setStatus("コードを選択しました。⌘C / Ctrl+C でコピーしてください。"); }
+  };
+  $("save").onclick = () => {
+    const url = URL.createObjectURL(new Blob([codeEl.value], { type: "text/html" }));
+    const a = document.createElement("a"); a.href = url; a.download = "選手リスト.html"; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  // File intake
+  function addFiles(list) {
+    const ok = [...list].filter(f => f.type === "application/pdf" || /^image\/(png|jpeg|webp)$/.test(f.type));
+    if (!ok.length) { setStatus("PDFか画像ファイルを入れてください。", true); return; }
+    files = files.concat(ok); renderFiles(); setStatus("");
+  }
+  function renderFiles() {
+    const el = $("files"); el.innerHTML = "";
+    files.forEach(f => { const c = document.createElement("span"); c.className = "chip"; c.textContent = f.name || "貼り付け画像"; el.append(c); });
+    if (files.length) { const b = document.createElement("button"); b.type = "button"; b.className = "small"; b.textContent = "クリア"; b.onclick = () => { files = []; renderFiles(); }; el.append(b); }
+    go.disabled = !files.length;
+  }
+  $("pick").onclick = () => fileIn.click();
+  fileIn.onchange = () => { addFiles(fileIn.files); fileIn.value = ""; };
+  ["dragenter", "dragover"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", ev => addFiles(ev.dataTransfer.files));
+  document.addEventListener("paste", ev => {
+    if (ev.target.closest && ev.target.closest("input,textarea")) return;
+    const imgs = [...(ev.clipboardData?.files || [])];
+    if (imgs.length) { ev.preventDefault(); addFiles(imgs); }
+  });
+
+  // Reading
+  if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+  let ocrWorker = null;
+  async function getOcr() {
+    if (ocrWorker) return ocrWorker;
+    if (!window.Tesseract) throw new Error("文字認識の部品を読み込めませんでした。通信状態を確認してください。");
+    setStatus("文字認識の準備中…（初回は時間がかかります）");
+    ocrWorker = await Tesseract.createWorker("jpn+eng", 1, {
+      logger: m => { if (m.status === "recognizing text") { prog.hidden = false; prog.value = m.progress; } },
+    });
+    return ocrWorker;
+  }
+  async function ocrImage(src) {
+    const w = await getOcr();
+    const { data } = await w.recognize(src);
+    return data.text.split("\n");
+  }
+  function pdfLines(content) {
+    const byY = new Map();
+    for (const it of content.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const y = Math.round(it.transform[5] / 3) * 3;
+      if (!byY.has(y)) byY.set(y, []);
+      byY.get(y).push(it);
+    }
+    return [...byY.entries()].sort((a, b) => b[0] - a[0]).map(([, items]) => {
+      items.sort((a, b) => a.transform[4] - b.transform[4]);
+      let s = "", lastEnd = null;
+      for (const it of items) {
+        const x = it.transform[4], h = Math.abs(it.transform[3]) || 10;
+        if (lastEnd !== null && x - lastEnd > h * 0.6) s += " ";
+        s += it.str; lastEnd = x + (it.width || 0);
+      }
+      return s;
+    });
+  }
+  async function readPdf(file) {
+    if (!window.pdfjsLib) throw new Error("PDFの読み込み部品を読み込めませんでした。");
+    const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const lines = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      setStatus(`PDFを読み取り中… ${i} / ${pdf.numPages} ページ`);
+      const page = await pdf.getPage(i);
+      const text = pdfLines(await page.getTextContent());
+      if (text.join("").replace(/\s/g, "").length > 20) { lines.push(...text); continue; }
+      // scanned page: render and OCR
+      const vp = page.getViewport({ scale: 2 });
+      const cv = document.createElement("canvas"); cv.width = vp.width; cv.height = vp.height;
+      const cx = cv.getContext("2d"); cx.fillStyle = "#fff"; cx.fillRect(0, 0, cv.width, cv.height);
+      await page.render({ canvasContext: cx, viewport: vp }).promise;
+      setStatus(`文字認識中… ${i} / ${pdf.numPages} ページ`);
+      lines.push(...await ocrImage(cv));
+    }
+    return lines;
+  }
+
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const lines = [];
+      for (const f of files) {
+        if (f.type === "application/pdf") lines.push(...await readPdf(f));
+        else { setStatus(`文字認識中… ${f.name || "画像"}`); lines.push(...await ocrImage(f)); }
+      }
+      rawEl.textContent = lines.join("\n") || "（文字が見つかりませんでした）";
+      const found = parseRoster(lines);
+      $("exnote").hidden = true;
+      rows = found; renderRows();
+      setStatus(found.length ? `${found.length}人を抜き出しました。表を確認して、違うところは直してください。` : "選手を見つけられませんでした。「読み取った元の文字を見る」を確認し、表に手で入力してください。", !found.length);
+    } catch (e) {
+      setStatus(e?.message || "読み取りに失敗しました。", true);
+    } finally {
+      prog.hidden = true; go.disabled = !files.length;
+    }
+  };
+})();
+</script>
+</body>
+</html>
